@@ -5,7 +5,7 @@
 ## CVPR'21 Weakly Supervised Action Selection Learning in Video
 [[paper](http://www.cs.toronto.edu/~guangweiyu/pdfs/CVPR2021_asl.pdf)]
 
-Authors: [Jeremy Junwei Ma](https://scholar.google.com/citations?user=LyoH1SMAAAAJ&hl=en), [Satya Krishna Gorti](http://www.cs.toronto.edu/~satyag/), [Guang Wei Yu](http://www.cs.toronto.edu/~guangweiyu/), [Maksims Volkovs](http://www.cs.toronto.edu/~mvolkovs)
+Authors: [Jeremy Junwei Ma](https://scholar.google.com/citations?user=LyoH1SMAAAAJ&hl=en), [Satya Krishna Gorti](http://www.cs.toronto.edu/~satyag/), [Guangwei Yu](http://www.cs.toronto.edu/~guangweiyu/), [Maksims Volkovs](http://www.cs.toronto.edu/~mvolkovs)
 <a name="intro"/>
 
 ## Introduction
