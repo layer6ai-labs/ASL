@@ -290,7 +290,6 @@ class ANETEval(object):
         """
         self.ap = self.wrapper_compute_average_precision()
 
-        print(self.ap.mean(axis=0))
         self.mAP = self.ap.mean(axis=1)
         self.average_mAP = self.mAP.mean()
 
