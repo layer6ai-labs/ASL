@@ -39,3 +39,15 @@ Experiments on THUMOS-14 dataset were run on a single NVIDIA TITAN V GPU with 12
 ```
     bash ./scripts/inference.sh
 ```
+
+## Citation
+
+If you find this code useful in your research, please cite the following paper:
+
+    @inproceedings{ma2021asl,
+      title={Weakly Supervised Action Selection Learning in Video},
+      author={Ma, Junwei and Gorti, Satya Krishna and Volkovs, Maksims and Yu, Guangwei},
+      booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
+      year={2021}
+    }
+
