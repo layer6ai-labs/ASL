@@ -24,20 +24,18 @@ Experiments on THUMOS-14 dataset were run on a single NVIDIA TITAN V GPU with 12
 
 ## Dataset
 
-1. Download the THUMOS-14 dataset [here](http://crcv.ucf.edu/THUMOS14/download.html)
-
-2. In `./scripts/train.sh` and `./scripts/inference.sh`, replace the `--data_path` argument with the downloaded THUMOS-14 path
+Download the THUMOS-14 dataset [here](http://crcv.ucf.edu/THUMOS14/download.html) to `DATA_PATH`
 
 ## Training
 
 ```
-    bash ./scripts/train.sh
+    bash ./scripts/train.sh DATA_PATH
 ```
 
 ## Inference
 
 ```
-    bash ./scripts/inference.sh
+    bash ./scripts/inference.sh DATA_PATH
 ```
 
 ## Citation
