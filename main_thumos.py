@@ -57,116 +57,7 @@ def get_dataloaders(config):
     return train_loader, test_loader
 
 
-def train(net, config):
-    # resume training
-    load_weight(net, config)
-
-    # set up dataloader, loss and optimizer
-    train_loader, test_loader = get_dataloaders(config)
-    ce_criterion = CrossEntropyLoss()
-    optimizer = torch.optim.Adam(net.parameters(), lr=config.lr,
-                                 betas=(0.9, 0.999), weight_decay=0.0005)
-
-    # training
-    best_mAP = -1
-    step = 0
-    cumloss = 0
-    for epoch in range(config.num_epochs):
-
-        for _data, _label, _, _, _ in train_loader:
-
-            batch_size = _data.shape[0]
-            _data, _label = _data.cuda(), _label.cuda()
-            optimizer.zero_grad()
-
-            # FORWARD PASS
-            cas, (action_flow, action_rgb) = net(_data, is_training=True)
-
-            combined_cas = misc_utils.instance_selection_function(torch.softmax(cas.detach(), -1), 
-                                action_flow.permute(0, 2, 1).detach(), action_rgb.permute(0, 2, 1))
-            _, topk_indices = torch.topk(combined_cas, config.num_segments // 8, dim=1)
-
-            cas_top = torch.gather(cas, 1, topk_indices)
-            cas_top = torch.mean(cas_top, dim=1)
-
-            # calcualte pseudo target
-            cls_agnostic_gt = []
-            cls_agnostic_neg_gt = []
-            for b in range(batch_size):
-                label_indices_b = torch.nonzero(_label[b, :])[:,0]
-                topk_indices_b = topk_indices[b, :, label_indices_b] # topk, num_actions
-                cls_agnostic_gt_b = torch.zeros((1, 1, config.num_segments)).cuda()
-
-                # positive examples
-                for gt_i in range(len(label_indices_b)):
-                    cls_agnostic_gt_b[0, 0, topk_indices_b[:, gt_i]] = 1
-                cls_agnostic_gt.append(cls_agnostic_gt_b)
-
-            cls_agnostic_gt = torch.cat(cls_agnostic_gt, dim=0)  # B, 1, num_segments
-
-            # losses
-            base_loss = ce_criterion(cas_top, _label)
-            base_loss_np = base_loss.detach().cpu().numpy()
-            cost = base_loss
-
-            pos_factor = torch.sum(cls_agnostic_gt,dim=2)
-            neg_factor = torch.sum(1-cls_agnostic_gt,dim=2)
-
-            Lgce = GeneralizedCE(q=config.q_val)
-
-            cls_agnostic_loss_flow = Lgce(action_flow.squeeze(1), cls_agnostic_gt.squeeze(1))
-            cls_agnostic_loss_rgb = Lgce(action_rgb.squeeze(1), cls_agnostic_gt.squeeze(1))
-
-            cost += cls_agnostic_loss_flow + cls_agnostic_loss_rgb
-            cost.backward()
-
-            optimizer.step()
-
-            cumloss += cost.cpu().item()
-            step += 1
-
-            # evaluation
-            if step % config.detection_inf_step == 0:
-                cumloss /= config.detection_inf_step
-
-                with torch.no_grad():
-                    net = net.eval()
-                    mean_ap, test_acc = inference(net, config, test_loader, model_file=None)
-                    net = net.train()
-
-                if mean_ap > best_mAP:
-                    best_mAP = mean_ap
-                    torch.save(net.state_dict(), os.path.join(config.model_path, "CAS_Only.pkl"))
-
-                print("epoch={:5d}  step={:5d}  Loss={:.4f}  cls_acc={:5.2f}  best_map={:5.2f}".format(
-                        epoch, step, cumloss, test_acc * 100, best_mAP * 100))
-
-                cumloss = 0
-
-
-def test(net, config):
-    test_loader = data.DataLoader(
-        ThumosFeature(data_path=config.data_path, mode='test',
-                      modal=config.modal, feature_fps=config.feature_fps,
-                      num_segments=config.num_segments, len_feature=config.len_feature,
-                      seed=config.seed, sampling='uniform', supervision='strong'),
-        batch_size=1,
-        shuffle=False, num_workers=config.num_workers)
-
-    net.eval()
-
-    with torch.no_grad():
-        model_filename = "CAS_Only.pkl"
-        writer = None
-        config.model_file = os.path.join(config.model_path, model_filename)
-        _mean_ap, test_acc = inference(net, config, test_loader, model_file=config.model_file)
-        print("cls_acc={:.5f} map={:.5f}".format(test_acc*100, _mean_ap*100))
-
-
-def main():
-    args = parse_args()
-    config = Config(args)
-
+def set_seed(config):
     if config.seed >= 0:
         torch.manual_seed(config.seed)
         np.random.seed(config.seed)
@@ -178,13 +69,142 @@ def main():
         # noinspection PyUnresolvedReferences
         torch.backends.cudnn.benchmark = False
 
-    net = ModelFactory.get_model(config.model_name, config)
-    net = net.cuda()
+
+class ThumosTrainer():
+    def __init__(self, config):
+        # config
+        self.config = config
+
+        # network
+        self.net = ModelFactory.get_model(config.model_name, config)
+        self.net = self.net.cuda()
+
+        # data
+        self.train_loader, self.test_loader = get_dataloaders(self.config)
+
+        # loss, optimizer
+        self.optimizer = torch.optim.Adam(self.net.parameters(), lr=self.config.lr,
+                            betas=(0.9, 0.999), weight_decay=0.0005)
+        self.criterion = CrossEntropyLoss()
+        self.Lgce = GeneralizedCE(q=self.config.q_val)
+
+        # parameters
+        self.best_mAP = -1 # init
+        self.step = 0
+        self.total_loss_per_epoch = 0
+
+
+    def test(self):
+        self.net.eval()
+
+        with torch.no_grad():
+            model_filename = "CAS_Only.pkl"
+            self.config.model_file = os.path.join(self.config.model_path, model_filename)
+            _mean_ap, test_acc = inference(self.net, self.config, self.test_loader, model_file=self.config.model_file)
+            print("cls_acc={:.5f} map={:.5f}".format(test_acc*100, _mean_ap*100))
+
+
+    def calculate_pesudo_target(self, batch_size, label, topk_indices):
+        cls_agnostic_gt = []
+        cls_agnostic_neg_gt = []
+        for b in range(batch_size):
+            label_indices_b = torch.nonzero(label[b, :])[:,0]
+            topk_indices_b = topk_indices[b, :, label_indices_b] # topk, num_actions
+            cls_agnostic_gt_b = torch.zeros((1, 1, self.config.num_segments)).cuda()
+
+            # positive examples
+            for gt_i in range(len(label_indices_b)):
+                cls_agnostic_gt_b[0, 0, topk_indices_b[:, gt_i]] = 1
+            cls_agnostic_gt.append(cls_agnostic_gt_b)
+
+        return torch.cat(cls_agnostic_gt, dim=0)  # B, 1, num_segments
+        
+
+    def calculate_all_losses(self, cas_top, _label, action_flow, action_rgb, cls_agnostic_gt):
+        base_loss = self.criterion(cas_top, _label)
+        cost = base_loss
+
+        cls_agnostic_loss_flow = self.Lgce(action_flow.squeeze(1), cls_agnostic_gt.squeeze(1))
+        cls_agnostic_loss_rgb = self.Lgce(action_rgb.squeeze(1), cls_agnostic_gt.squeeze(1))
+
+        cost += cls_agnostic_loss_flow + cls_agnostic_loss_rgb
+        return cost
+
+    
+    def evaluate(self, epoch=0):
+        if self.step % self.config.detection_inf_step == 0:
+            self.total_loss_per_epoch /= self.config.detection_inf_step
+
+            with torch.no_grad():
+                self.net = self.net.eval()
+                mean_ap, test_acc = inference(self.net, self.config, self.test_loader, model_file=None)
+                self.net = self.net.train()
+
+            if mean_ap > self.best_mAP:
+                self.best_mAP = mean_ap
+                torch.save(self.net.state_dict(), os.path.join(self.config.model_path, "CAS_Only.pkl"))
+
+            print("epoch={:5d}  step={:5d}  Loss={:.4f}  cls_acc={:5.2f}  best_map={:5.2f}".format(
+                    epoch, self.step, self.total_loss_per_epoch, test_acc * 100, self.best_mAP * 100))
+
+            self.total_loss_per_epoch = 0
+
+
+    def forward_pass(self, _data):
+        cas, (action_flow, action_rgb) = self.net(_data, is_training=True)
+
+        combined_cas = misc_utils.instance_selection_function(torch.softmax(cas.detach(), -1), 
+                            action_flow.permute(0, 2, 1).detach(), action_rgb.permute(0, 2, 1))
+
+        _, topk_indices = torch.topk(combined_cas, self.config.num_segments // 8, dim=1)
+        cas_top = torch.mean(torch.gather(cas, 1, topk_indices), dim=1)
+
+        return cas_top, topk_indices, action_flow, action_rgb
+
+
+    def train(self):
+        # resume training
+        load_weight(self.net, self.config)
+
+        # training
+        for epoch in range(self.config.num_epochs):
+
+            for _data, _label, _, _, _ in self.train_loader:
+
+                batch_size = _data.shape[0]
+                _data, _label = _data.cuda(), _label.cuda()
+                self.optimizer.zero_grad()
+
+                # forward pass
+                cas_top, topk_indices, action_flow, action_rgb = self.forward_pass(_data)
+
+                # calcualte pseudo target
+                cls_agnostic_gt = self.calculate_pesudo_target(batch_size, _label, topk_indices)
+
+                # losses
+                cost = self.calculate_all_losses(cas_top, _label, action_flow, action_rgb, cls_agnostic_gt)
+
+                cost.backward()
+                self.optimizer.step()
+
+                self.total_loss_per_epoch += cost.cpu().item()
+                self.step += 1
+
+                # evaluation
+                self.evaluate(epoch=epoch)
+
+
+def main():
+    args = parse_args()
+    config = Config(args)
+    set_seed(config)
+
+    trainer = ThumosTrainer(config)
 
     if args.inference_only:
-        test(net, config)
+        trainer.test()
     else:
-        train(net, config)
+        trainer.train()
 
 
 if __name__ == '__main__':
