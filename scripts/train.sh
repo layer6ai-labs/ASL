@@ -4,4 +4,4 @@ python main_thumos.py \
 --num_epochs 100 \
 --detection_inf_step 50 \
 --soft_nms \
---data_path "/home/jeremy/THUMOS14/"
+--data_path $1
